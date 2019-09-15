@@ -29,6 +29,7 @@ import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.parameters.Parameter;
 import io.swagger.v3.oas.models.security.*;
 import io.swagger.v3.oas.models.tags.Tag;
+import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -49,6 +50,7 @@ import java.net.URL;
 import java.nio.file.Path;
 import java.time.ZonedDateTime;
 import java.util.*;
+import java.util.stream.Collectors;
 
 public class DefaultGenerator extends AbstractGenerator implements Generator {
     protected final Logger LOGGER = LoggerFactory.getLogger(DefaultGenerator.class);
@@ -538,76 +540,118 @@ public class DefaultGenerator extends AbstractGenerator implements Generator {
             }
             paths = updatedPaths;
         }
-        for (String tag : paths.keySet()) {
-            try {
-                List<CodegenOperation> ops = paths.get(tag);
-                Collections.sort(ops, new Comparator<CodegenOperation>() {
-                    @Override
-                    public int compare(CodegenOperation one, CodegenOperation another) {
-                        return ObjectUtils.compare(one.operationId, another.operationId);
+
+        //Get yaml file name and the collection of all paths
+        List<CodegenOperation> ops = paths.values().stream().flatMap(Collection::stream).collect(Collectors.toList());
+        String tag = StringUtils.capitalize(FilenameUtils.getBaseName(this.config.getInputSpec()));
+
+        try {
+//                List<CodegenOperation> ops = paths.get(tag);
+            Collections.sort(ops, new Comparator<CodegenOperation>() {
+                @Override
+                public int compare(CodegenOperation one, CodegenOperation another) {
+                    return ObjectUtils.compare(one.operationId, another.operationId);
+                }
+            });
+            Map<String, Object> operation = processOperations(config, tag, ops, allModels);
+            URL url = URLPathUtils.getServerURL(openAPI);
+            operation.put("basePath", basePath);
+            operation.put("basePathWithoutHost", config.encodePath(url.getPath()).replaceAll("/$", ""));
+            operation.put("contextPath", contextPath);
+            operation.put("baseName", tag);
+            operation.put("apiPackage", config.apiPackage());
+            operation.put("modelPackage", config.modelPackage());
+            operation.putAll(config.additionalProperties());
+            operation.put("classname", config.toApiName(tag));
+            operation.put("classVarName", config.toApiVarName(tag));
+            operation.put("importPath", config.toApiImport(tag));
+            operation.put("classFilename", config.toApiFilename(tag));
+            operation.put("strictSpecBehavior", config.isStrictSpecBehavior());
+
+            if (allModels == null || allModels.isEmpty()) {
+                operation.put("hasModel", false);
+            } else {
+                operation.put("hasModel", true);
+            }
+
+            if (!config.vendorExtensions().isEmpty()) {
+                operation.put("vendorExtensions", config.vendorExtensions());
+            }
+
+            // process top-level x-group-parameters
+            if (config.vendorExtensions().containsKey("x-group-parameters")) {
+                Boolean isGroupParameters = Boolean.valueOf(config.vendorExtensions().get("x-group-parameters").toString());
+
+                Map<String, Object> objectMap = (Map<String, Object>) operation.get("operations");
+                @SuppressWarnings("unchecked")
+                List<CodegenOperation> operations = (List<CodegenOperation>) objectMap.get("operation");
+                for (CodegenOperation op : operations) {
+                    if (isGroupParameters && !op.vendorExtensions.containsKey("x-group-parameters")) {
+                        op.vendorExtensions.put("x-group-parameters", Boolean.TRUE);
                     }
-                });
-                Map<String, Object> operation = processOperations(config, tag, ops, allModels);
-                URL url = URLPathUtils.getServerURL(openAPI);
-                operation.put("basePath", basePath);
-                operation.put("basePathWithoutHost", config.encodePath(url.getPath()).replaceAll("/$", ""));
-                operation.put("contextPath", contextPath);
-                operation.put("baseName", tag);
-                operation.put("apiPackage", config.apiPackage());
-                operation.put("modelPackage", config.modelPackage());
-                operation.putAll(config.additionalProperties());
-                operation.put("classname", config.toApiName(tag));
-                operation.put("classVarName", config.toApiVarName(tag));
-                operation.put("importPath", config.toApiImport(tag));
-                operation.put("classFilename", config.toApiFilename(tag));
-                operation.put("strictSpecBehavior", config.isStrictSpecBehavior());
-
-                if (allModels == null || allModels.isEmpty()) {
-                    operation.put("hasModel", false);
-                } else {
-                    operation.put("hasModel", true);
                 }
+            }
 
-                if (!config.vendorExtensions().isEmpty()) {
-                    operation.put("vendorExtensions", config.vendorExtensions());
-                }
-
-                // process top-level x-group-parameters
-                if (config.vendorExtensions().containsKey("x-group-parameters")) {
-                    Boolean isGroupParameters = Boolean.valueOf(config.vendorExtensions().get("x-group-parameters").toString());
-
-                    Map<String, Object> objectMap = (Map<String, Object>) operation.get("operations");
-                    @SuppressWarnings("unchecked")
-                    List<CodegenOperation> operations = (List<CodegenOperation>) objectMap.get("operation");
-                    for (CodegenOperation op : operations) {
-                        if (isGroupParameters && !op.vendorExtensions.containsKey("x-group-parameters")) {
-                            op.vendorExtensions.put("x-group-parameters", Boolean.TRUE);
-                        }
-                    }
-                }
-
-                // Pass sortParamsByRequiredFlag through to the Mustache template...
-                boolean sortParamsByRequiredFlag = true;
-                if (this.config.additionalProperties().containsKey(CodegenConstants.SORT_PARAMS_BY_REQUIRED_FLAG)) {
-                    sortParamsByRequiredFlag = Boolean.valueOf(this.config.additionalProperties().get(CodegenConstants.SORT_PARAMS_BY_REQUIRED_FLAG).toString());
-                }
-                operation.put("sortParamsByRequiredFlag", sortParamsByRequiredFlag);
+            // Pass sortParamsByRequiredFlag through to the Mustache template...
+            boolean sortParamsByRequiredFlag = true;
+            if (this.config.additionalProperties().containsKey(CodegenConstants.SORT_PARAMS_BY_REQUIRED_FLAG)) {
+                sortParamsByRequiredFlag = Boolean.valueOf(this.config.additionalProperties().get(CodegenConstants.SORT_PARAMS_BY_REQUIRED_FLAG).toString());
+            }
+            operation.put("sortParamsByRequiredFlag", sortParamsByRequiredFlag);
 
                 /* consumes, produces are no longer defined in OAS3.0
                 processMimeTypes(swagger.getConsumes(), operation, "consumes");
                 processMimeTypes(swagger.getProduces(), operation, "produces");
                 */
 
-                allOperations.add(new HashMap<String, Object>(operation));
-                for (int i = 0; i < allOperations.size(); i++) {
-                    Map<String, Object> oo = (Map<String, Object>) allOperations.get(i);
-                    if (i < (allOperations.size() - 1)) {
-                        oo.put("hasMore", "true");
-                    }
+            allOperations.add(new HashMap<String, Object>(operation));
+            for (int i = 0; i < allOperations.size(); i++) {
+                Map<String, Object> oo = (Map<String, Object>) allOperations.get(i);
+                if (i < (allOperations.size() - 1)) {
+                    oo.put("hasMore", "true");
+                }
+            }
+
+            for (String templateName : config.apiTemplateFiles().keySet()) {
+                String filename = config.apiFilename(templateName, tag);
+                if (!config.shouldOverwrite(filename) && new File(filename).exists()) {
+                    LOGGER.info("Skipped overwriting " + filename);
+                    continue;
                 }
 
-                for (String templateName : config.apiTemplateFiles().keySet()) {
-                    String filename = config.apiFilename(templateName, tag);
+                File written = processTemplateToFile(operation, templateName, filename);
+                if (written != null) {
+                    files.add(written);
+                    if (config.isEnablePostProcessFile()) {
+                        config.postProcessFile(written, "api");
+                    }
+                }
+            }
+
+            if (generateApiTests) {
+                // to generate api test files
+                for (String templateName : config.apiTestTemplateFiles().keySet()) {
+                    String filename = config.apiTestFilename(templateName, tag);
+                    // do not overwrite test file that already exists
+                    if (new File(filename).exists()) {
+                        LOGGER.info("File exists. Skipped overwriting " + filename);
+                        continue;
+                    }
+
+                    File written = processTemplateToFile(operation, templateName, filename);
+                    if (written != null) {
+                        files.add(written);
+                        if (config.isEnablePostProcessFile()) {
+                            config.postProcessFile(written, "api-test");
+                        }
+                    }
+                }
+            }
+
+            if (generateApiDocumentation) {
+                // to generate api documentation files
+                for (String templateName : config.apiDocTemplateFiles().keySet()) {
+                    String filename = config.apiDocFilename(templateName, tag);
                     if (!config.shouldOverwrite(filename) && new File(filename).exists()) {
                         LOGGER.info("Skipped overwriting " + filename);
                         continue;
@@ -617,54 +661,16 @@ public class DefaultGenerator extends AbstractGenerator implements Generator {
                     if (written != null) {
                         files.add(written);
                         if (config.isEnablePostProcessFile()) {
-                            config.postProcessFile(written, "api");
+                            config.postProcessFile(written, "api-doc");
                         }
                     }
                 }
-
-                if (generateApiTests) {
-                    // to generate api test files
-                    for (String templateName : config.apiTestTemplateFiles().keySet()) {
-                        String filename = config.apiTestFilename(templateName, tag);
-                        // do not overwrite test file that already exists
-                        if (new File(filename).exists()) {
-                            LOGGER.info("File exists. Skipped overwriting " + filename);
-                            continue;
-                        }
-
-                        File written = processTemplateToFile(operation, templateName, filename);
-                        if (written != null) {
-                            files.add(written);
-                            if (config.isEnablePostProcessFile()) {
-                                config.postProcessFile(written, "api-test");
-                            }
-                        }
-                    }
-                }
-
-                if (generateApiDocumentation) {
-                    // to generate api documentation files
-                    for (String templateName : config.apiDocTemplateFiles().keySet()) {
-                        String filename = config.apiDocFilename(templateName, tag);
-                        if (!config.shouldOverwrite(filename) && new File(filename).exists()) {
-                            LOGGER.info("Skipped overwriting " + filename);
-                            continue;
-                        }
-
-                        File written = processTemplateToFile(operation, templateName, filename);
-                        if (written != null) {
-                            files.add(written);
-                            if (config.isEnablePostProcessFile()) {
-                                config.postProcessFile(written, "api-doc");
-                            }
-                        }
-                    }
-                }
-
-            } catch (Exception e) {
-                throw new RuntimeException("Could not generate api file for '" + tag + "'", e);
             }
+
+        } catch (Exception e) {
+            throw new RuntimeException("Could not generate api file for '" + tag + "'", e);
         }
+
         if (GlobalSettings.getProperty("debugOperations") != null) {
             LOGGER.info("############ Operation info ############");
             Json.prettyPrint(allOperations);
@@ -940,7 +946,6 @@ public class DefaultGenerator extends AbstractGenerator implements Generator {
      * Returns the path of a template, allowing access to the template where consuming literal contents aren't desirable or possible.
      *
      * @param name the template name (e.g. model.mustache)
-     *
      * @return The {@link Path} to the template
      */
     @Override
@@ -1059,21 +1064,21 @@ public class DefaultGenerator extends AbstractGenerator implements Generator {
                 if (authMethods != null && !authMethods.isEmpty()) {
                     codegenOperation.authMethods = config.fromSecurity(authMethods);
                     List<Map<String, Object>> scopes = new ArrayList<Map<String, Object>>();
-                    if (codegenOperation.authMethods != null){
-                        for (CodegenSecurity security : codegenOperation.authMethods){
+                    if (codegenOperation.authMethods != null) {
+                        for (CodegenSecurity security : codegenOperation.authMethods) {
                             if (security != null && security.isBasicBearer != null && security.isBasicBearer &&
-                               securities != null){
-                                for (SecurityRequirement req : securities){
+                                    securities != null) {
+                                for (SecurityRequirement req : securities) {
                                     if (req == null) continue;
-                                    for (String key : req.keySet()){
-                                        if (security.name != null && key.equals(security.name)){
+                                    for (String key : req.keySet()) {
+                                        if (security.name != null && key.equals(security.name)) {
                                             int count = 0;
-                                            for (String sc : req.get(key)){
+                                            for (String sc : req.get(key)) {
                                                 Map<String, Object> scope = new HashMap<String, Object>();
                                                 scope.put("scope", sc);
                                                 scope.put("description", "");
                                                 count++;
-                                                if (req.get(key) != null && count < req.get(key).size()){
+                                                if (req.get(key) != null && count < req.get(key).size()) {
                                                     scope.put("hasMore", "true");
                                                 } else {
                                                     scope.put("hasMore", null);
